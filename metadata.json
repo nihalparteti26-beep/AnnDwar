@@ -1,0 +1,6 @@
+{
+  "name": "Anndwar - Grain Procurement & Logistics Platform",
+  "description": "AI-powered grain procurement and logistics platform with crop pre-check, slot booking, live queue, centre balancing, and payment tracking.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
