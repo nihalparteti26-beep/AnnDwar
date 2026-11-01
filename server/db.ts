@@ -1,3 +1,5 @@
+import 'dotenv/config';
+import { MongoClient, type Db, type Collection } from 'mongodb';
 import { 
   FarmerProfile, 
   DocumentItem, 
@@ -12,54 +14,114 @@ import {
 import { dispatchRealNotification } from './services/notificationService.js';
 
 // In-Memory & Persistent MongoDB-compatible collection store
+
+let mongoClient: MongoClient | null = null;
+let mongoDbPromise: Promise<Db> | null = null;
+
+async function getMongoDb(): Promise<Db> {
+  const uri = process.env.MONGODB_URI;
+
+  if (!uri) {
+    throw new Error('MONGODB_URI is missing. Add it to your environment variables.');
+  }
+
+  if (!mongoClient) {
+    mongoClient = new MongoClient(uri);
+  }
+
+  if (!mongoDbPromise) {
+    mongoDbPromise = mongoClient
+      .connect()
+      .then(() => mongoClient!.db(process.env.MONGODB_DB || 'anndwaar'))
+      .catch((error) => {
+        mongoDbPromise = null;
+        throw error;
+      });
+  }
+
+  return mongoDbPromise;
+}
+
 class MongoCollection<T extends { id: string }> {
   name: string;
-  documents: Map<string, T> = new Map();
+  private initialData: T[];
+  private collectionPromise: Promise<Collection<any>> | null = null;
 
   constructor(name: string, initialData: T[] = []) {
     this.name = name;
-    initialData.forEach(item => this.documents.set(item.id, { ...item }));
+    this.initialData = initialData;
+  }
+
+  private async getCollection(): Promise<Collection<any>> {
+    if (!this.collectionPromise) {
+      this.collectionPromise = (async () => {
+        const mongoDb = await getMongoDb();
+        const collection = mongoDb.collection(this.name);
+
+        // Insert initial demo data only if it does not already exist
+        for (const item of this.initialData) {
+          await collection.updateOne(
+            { id: item.id },
+            { $setOnInsert: item },
+            { upsert: true }
+          );
+        }
+
+        return collection;
+      })();
+    }
+
+    return this.collectionPromise;
   }
 
   async find(filter: Partial<T> = {}): Promise<T[]> {
-    const list = Array.from(this.documents.values());
-    if (Object.keys(filter).length === 0) return list;
-    return list.filter(item => {
-      for (const [key, val] of Object.entries(filter)) {
-        if ((item as any)[key] !== val) return false;
-      }
-      return true;
-    });
+    const collection = await this.getCollection();
+    return collection.find(filter as any).toArray() as Promise<T[]>;
   }
 
   async findById(id: string): Promise<T | null> {
-    return this.documents.get(id) || null;
+    const collection = await this.getCollection();
+    return await collection.findOne({ id }) as T | null;
   }
 
   async findOne(filter: Partial<T> = {}): Promise<T | null> {
-    const results = await this.find(filter);
-    return results[0] || null;
+    const collection = await this.getCollection();
+    return await collection.findOne(filter as any) as T | null;
   }
 
   async create(doc: T): Promise<T> {
-    this.documents.set(doc.id, { ...doc });
+    const collection = await this.getCollection();
+
+    await collection.replaceOne(
+      { id: doc.id },
+      doc,
+      { upsert: true }
+    );
+
     return doc;
   }
 
   async updateOne(id: string, updates: Partial<T>): Promise<T | null> {
-    const existing = this.documents.get(id);
-    if (!existing) return null;
-    const updated = { ...existing, ...updates };
-    this.documents.set(id, updated);
-    return updated;
+    const collection = await this.getCollection();
+
+    await collection.updateOne(
+      { id },
+      { $set: updates }
+    );
+
+    return await collection.findOne({ id }) as T | null;
   }
 
   async deleteOne(id: string): Promise<boolean> {
-    return this.documents.delete(id);
+    const collection = await this.getCollection();
+    const result = await collection.deleteOne({ id });
+
+    return result.deletedCount > 0;
   }
 
   async count(): Promise<number> {
-    return this.documents.size;
+    const collection = await this.getCollection();
+    return collection.countDocuments();
   }
 }
 
